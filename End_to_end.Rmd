@@ -1,0 +1,219 @@
+---
+title: "An end to end workflow for differential gene expression using Affymetrix microarrays"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+https://www.bioconductor.org/packages/devel/workflows/vignettes/maEndToEnd/inst/doc/MA-Workflow.html
+Paper studying the differences in gene expression in inflamed and non-inflamed tissue
+14 patients suffering from Ulcerative colitis (UC) and 15 patients with Crohn’s disease (CD) were tested.
+58 arrays in total.
+Differential expression (DE)
+```{r}
+
+#if (!require("BiocManager"))
+    #install.packages("BiocManager") #Nativa
+#BiocManager::install("maEndToEnd", version = "devel")
+library(maEndToEnd)
+#?maEndToEnd
+#install.packages("devtools")
+library(devtools)
+#devtools::install_github("r-lib/remotes", force = TRUE)
+library(remotes)
+#packageVersion("remotes") # has to be 1.1.1.9000 or later
+
+#remotes::install_github("b-klaus/maEndToEnd", ref="master") #No nativa
+```
+
+
+```{r}
+# Estan instaladas
+#BiocManager::install("maEndToEnd", version = "devel")
+#install.packages("devtools")
+#suppressPackageStartupMessages({library("maEndToEnd")})
+#General Bioconductor packages
+
+#BiocManager::install("Biobase")
+     library(Biobase)
+      #?Biobase
+
+#BiocManager::install("oligoClasses")
+     library(oligoClasses)
+     #?oligoClasses
+#Annotation and data import packages
+   #install.packages("ArrayExpress")
+#BiocManager::install("ArrayExpress")
+
+    #library(ArrayExpress)
+    #?ArrayExpress
+   #BiocManager::install("pd.hugene.1.0.st.v1")
+    library(pd.hugene.1.0.st.v1)
+    #?pd.hugene.1.0.st.v1
+#   install.packages("hugene10sttranscriptcluster.db")
+    library(hugene10sttranscriptcluster.db)
+    #?hugene10sttranscriptcluster.db
+
+#Quality control and pre-processing packages
+   #BiocManager::install("oligo")
+    library(oligo)
+    #?oligo
+    #install.packages("arrayQualityMetrics") 
+    library(arrayQualityMetrics)
+    #?arrayQualityMetrics
+  
+#Analysis and statistics packages
+    #BiocManager::install("limma")
+    library(limma)
+    #?limma 
+#   install.packages("topGO")
+    library(topGO)
+   #?topGo 
+#    install.packages("ReactomePA")
+    library(ReactomePA)
+    #?ReactomePA
+#   install.packages("clusterProfiler")
+    library(clusterProfiler)
+    #?clusterProfiler
+     
+#Plotting and color options packages
+    #install.packages("gplots")
+    library(gplots)
+    #?gplots #No tiene documentacion
+   #install.packages("ggplot2")
+    library(ggplot2)
+    #?ggplot2
+    #install.packages("geneplotter") ##No estoy seguro de si instalo
+    library(geneplotter)
+    #?geneplotter
+#   install.packages("RColorBrewer")
+    library(RColorBrewer)
+    #?RColorBrewer
+#   install.packages("pheatmap")
+    library(pheatmap)
+    #?pheatmap
+     
+#Formatting/documentation packages
+   #install.packages("rmarkdown") ##Fue agregado
+    library(rmarkdown)
+    #?rmarkdown
+   #BiocManager::install("BiocStyle") ## No lo encuentra en R 
+   library(BiocStyle)
+   #install.packages("dplyr") ##Trae errores consecutivos pero lo instalo
+    library(dplyr)
+   #?dplyr
+    #install.packages("tidyr")
+    library(tidyr)
+    #?tidyr
+   
+#Helpers:
+#    install.packages("stringr")
+    library(stringr) #Los string son textos
+   #?stringr
+#    install.packages("matrixStats")
+    library(matrixStats)
+   #?matrixStats
+    #install.packages("genefilter")
+    library(genefilter)
+   #?genefilter
+#    install.packages("openxlsx")
+    library(openxlsx)
+   #openxlsx
+
+```
+These files are produced by the array scanner software and contain the measured probe intensities.
+Accession code E-MTAB-2967.
+```{r}
+raw_data_dir = tempdir()  #tempdir: 
+
+if (!dir.exists(raw_data_dir)) {
+    dir.create(raw_data_dir)
+}
+```
+```{r}
+anno_AE = getAE("E-MTAB-2967", path = raw_data_dir, type = "raw")
+
+```
+The MAGE-TAB format specifies up to five different types of files:
+
+- Investigation Description Format (IDF)
+- Array Design Format (ADF)
+- Sample and Data Relationship Format (SDRF)
+- Raw data files
+- Processed data files
+```{r}
+sdrf_location <- file.path(raw_data_dir, "E-MTAB-2967.sdrf.txt") #Path from temp
+SDRF <- read.delim(sdrf_location) # We import the SDRF file with the read.delim function from the raw data folder in order to obtain the sample annotation.
+
+rownames(SDRF) <- SDRF$Array.Data.File #The sample names are given in the column Array.Data.File of the SDRF data table and will be used as rownames for the SDRF file.
+SDRF <- AnnotatedDataFrame(SDRF)
+
+raw_data <- oligo::read.celfiles(filenames = file.path(raw_data_dir, 
+                                                SDRF$Array.Data.File),
+                                    verbose = FALSE, phenoData = SDRF)#We use the function read.celfiles from the oligo package (4) to import the files
+stopifnot(validObject(raw_data))
+
+```
+
+We now have a first look on the raw data.
+
+
+```{r}
+#The pData function of the Biobase package directly accesses the phenoData in the ExpressionSet raw_data. 
+head(Biobase::pData(raw_data))
+```
+The columns of interest for us are the following:
+
+- identifiers of the individuals, i.e. columns “Source.Name”, “Characteristics.individual.”
+- disease of the individual, i.e. “Factor.Value.disease.”
+- mucosa type, i.e. “Factor.Value.phenotype.”
+
+
+```{r}
+#We now subselect the corresponding columns:
+
+Biobase::pData(raw_data) <- Biobase::pData(raw_data)[, c("Source.Name",
+                                     "Characteristics.individual.",
+                                     "Factor.Value.disease.",
+                                     "Factor.Value.phenotype.")]
+```
+Quality control of the raw data
+
+```{r}
+#The expression intensity values are in the assayData sub-object “exprs” and can be accessed by the exprs(raw_data) function
+Biobase::exprs(raw_data)[1:5, 1:5]
+# Rows: the single DNA locations on the chip.
+# columns: samples of inflamed and non-inflamed tissue of every patient, respectively.
+```
+We then perform a principal component analysis (PCA) and plot it (Figure 2). Every point in the plot represents one sample, with the colour indicating the mucosa type (inflamed vs non-inflamed) and the shape indicating the disease (UC or CD).
+```{r}
+exp_raw <- log2(Biobase::exprs(raw_data))
+PCA_raw <- prcomp(t(exp_raw), scale. = FALSE)
+
+percentVar <- round(100*PCA_raw$sdev^2/sum(PCA_raw$sdev^2),1)
+sd_ratio <- sqrt(percentVar[2] / percentVar[1])
+
+dataGG <- data.frame(PC1 = PCA_raw$x[,1], PC2 = PCA_raw$x[,2],
+                    Disease = pData(raw_data)$Factor.Value.disease.,
+                    Phenotype = pData(raw_data)$Factor.Value.phenotype.,
+                    Individual = pData(raw_data)$Characteristics.individual.)
+
+ggplot(dataGG, aes(PC1, PC2)) +
+      geom_point(aes(shape = Disease, colour = Phenotype)) +
+  ggtitle("PCA plot of the log-transformed raw expression data") +
+  xlab(paste0("PC1, VarExp: ", percentVar[1], "%")) +
+  ylab(paste0("PC2, VarExp: ", percentVar[2], "%")) +
+  theme(plot.title = element_text(hjust = 0.5))+
+  coord_fixed(ratio = sd_ratio) +
+  scale_shape_manual(values = c(4,15)) + 
+  scale_color_manual(values = c("darkorange2", "dodgerblue4"))
+```
+We also represent the probe intensities via a boxplot graph with one box per individual microarray. (Figure 3).
+
+```{r}
+oligo::boxplot(raw_data, target = "core", 
+               main = "Boxplot of log2-intensitites for the raw data")
+```
+
+
+
